@@ -17,6 +17,8 @@ DB_PASS=$PASS
 
 USER=www-data
 
+NGINX_V=1.14.2
+
 # modify php configuration for YouPHPTube requirements
 PHPINI=/etc/php/7.0/apache2/php.ini
 sed -i "s|^memory_limit.*|memory_limit = 512M|" $PHPINI
@@ -55,7 +57,7 @@ chmod a+rx /usr/local/bin/youtube-dl
 cat > /etc/cron.daily/youtube-dl-update <<EOF
 #!/bin/sh
 
-/usr/local/bin/youtube-dl --update
+LC_ALL=C.UTF-8 /usr/local/bin/youtube-dl --update
 EOF
 chmod +x /etc/cron.daily/youtube-dl-update
 
@@ -107,15 +109,19 @@ ENC_URL="$LOCAL_ENC/install/checkConfiguration.php"
 curl $YPT_URL --data "$YPT_DATA"
 curl $ENC_URL --data "$ENC_DATA"
 
-# Enable CustomizeUser & CustomizeAdvanced plugins by default
+# Enable a few plugins by default
+
 get_value() {
-    grep $1 -A1 $2 | tail -1 | sed 's|.*return *"\(.*\)".*|\1|'
+    grep "public function $1" -A1 $2 | tail -1 | sed 's|.*return *"\(.*\)".*|\1|'
 }
 
 _rows='`uuid`, `status`, `created`, `modified`, `name`, `dirName`, `pluginversion`'
 _sql_code="INSERT INTO plugins ($_rows) VALUES"
 now="NOW()"
-for plugin in CustomizeUser CustomizeAdvanced; do
+
+plugins="CustomizeUser CustomizeAdvanced Live LiveChat"
+
+for plugin in $plugins; do
     path=$WEBROOT/plugin/$plugin/$plugin.php
     uuid=$(get_value getUUID $path)
     stat='active'
@@ -124,8 +130,9 @@ for plugin in CustomizeUser CustomizeAdvanced; do
     ver=$(get_value getPluginVersion $path)
     mysql --database=$APP --execute \
         "$_sql_code ('$uuid', '$stat', $now, $now, '$name', '$dirn', '$ver');"
+    install_sql="$(dirname $path)/install/install.sql"
+    [[ -f "$install_sql" ]] && mysql --database=$APP < $install_sql
 done
-
 
 service mysql stop
 service apache2 stop
@@ -138,20 +145,54 @@ done
 
 rm -r $WEBROOT/install $ENCROOT/install
 
-exit 1
-
 # install nginx rtmp module (and nginx itself) from backports & configure
 # including stats
-echo "deb http://deb.debian.org/debian stretch-backports main" > /etc/apt/sources.list.d/backports.list
-apt-get -y update
-apt-get -y -t stretch-backports install libnginx-mod-rtmp
-mv $SRC/nginx.conf /etc/nginx/nginx.conf
-service start nginx
-service stop nginx
-rm /etc/nginx/sites-enabled/default
-URL=https://raw.githubusercontent.com/arut/nginx-rtmp-module/master
-wget $URL/stat.xsl -O /var/www/html/stat.xsl
+#echo "deb http://deb.debian.org/debian stretch-backports main" > /etc/apt/sources.list.d/backports.list
+#apt-get -y update
+#apt-get -y -t stretch-backports install libnginx-mod-rtmp
+#mv $SRC/nginx.conf /etc/nginx/nginx.conf
+#rm /etc/nginx/sites-enabled/default
+#service nginx start
+#service nginx stop
+#URL=https://raw.githubusercontent.com/arut/nginx-rtmp-module/master
+#wget $URL/stat.xsl -O /var/www/html/stat.xsl
+
+# install nginx from source with rtmp module compiled in
+# requires additional dependencies: build-essential libssl-dev zlib1g-dev ibpcre3-dev
+mkdir -p $SRC/nginx
+cd $SRC/nginx
+git clone --depth=1 git://github.com/arut/nginx-rtmp-module.git
+wget http://nginx.org/download/nginx-$NGINX_V.tar.gz
+tar xzf nginx-$NGINX_V.tar.gz
+unset RELEASE
+cd nginx-$NGINX_V
+./configure --prefix=/usr/local/nginx --sbin-path=/usr/local/sbin/nginx \
+    --conf-path=/etc/nginx/nginx.conf --user=www-data \
+    --error-log-path=/var/log/nginx/error.log \
+    --http-log-path=/var/log/nginx/access.log \
+    --pid-path=/run/nginx.pid --lock-path=/run/nginx.lock \
+    --add-module=../nginx-rtmp-module \
+    --with-http_ssl_module --with-http_stub_status_module
+make
+checkinstall -y -D --pkgversion $NGINX_V make install
+apt install ./nginx_$NGINX_V-1_amd64.deb
+mkdir -p /var/www/nginx_html
+cp -r /usr/local/nginx/html/* /var/www/nginx_html/
+mv $SRC/nginx.conf /etc/nginx/
+mkdir -p /var/log/nginx
+touch /var/log/nginx/{error,access}.log
+chown -R $USER:$USER /var/log/nginx
+cp $SRC/nginx-rtmp-module/stat.xsl /var/www/nginx_html/
+
+#sed -i "/root / s| html;| /var/www/nginx_html/;|" /etc/nginx/nginx.conf
+#sed -i "/error_log / s| logs/error.log | /var/log/nginx/error.log |" /etc/nginx/nginx.conf
+#sed -i "s|\[YouPHPTubeURL\]|www.example.com|" /etc/nginx/nginx.conf
+#mv /etc/nginx/mime.types.default /etc/nginx/mime.types
+
 
 # Create Directories necessary for live stream
 mkdir -p /HLS/{live,low}
 chown -R $USER:$USER /HLS
+
+# test nginx config
+nginx -t
