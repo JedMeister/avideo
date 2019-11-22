@@ -17,6 +17,14 @@ php-gettext
 tinymce
 libpcre3
 daemon
-nginx
+//nginx
 
 unzip
+
+//build depends for building nginx from source
+checkinstall
+make
+gcc
+libpcre3-dev
+libssl-dev
+zlib1g-dev
